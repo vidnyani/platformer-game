@@ -1,0 +1,570 @@
+import pygame
+from pygame.locals import *
+from pygame import mixer #for sounds
+import pickle
+from os import path
+
+pygame.mixer.pre_init(44100,-16,2,512)
+mixer.init()
+pygame.init()
+clock = pygame.time.Clock()
+fps = 60
+
+#screen
+screen_width = 800
+screen_height = 800
+
+screen = pygame.display.set_mode((screen_width,screen_height))
+pygame.display.set_caption("Platformer")
+
+#define font
+score_font = pygame.font.SysFont("Bauhaus 93",30)
+font = pygame.font.SysFont("Bauhaus 93",70)
+# level_font = pygame.font.SysFont("Bauhaus 93",70)
+
+
+#define game variables
+tile_size = 40  #each tile 20x20 tile
+game_over = 0 
+main_menu = True
+level = 0
+max_levels = 7
+score = 0
+
+#define colors
+white = (255,255,255)
+blue = (0,0,255)
+
+#load images
+sun = pygame.image.load("sun.png") 
+sky = pygame.image.load("sky.png") 
+restart = pygame.image.load("restart_btn.png")
+start = pygame.image.load("start_btn.png")
+exit = pygame.image.load("exit_btn.png")
+
+
+#load sounds
+pygame.mixer.music.load("music.wav")
+pygame.mixer.music.play(-1,0.0,5000) #after 5000 millisec
+
+coin_s = pygame.mixer.Sound("img_coin.wav")
+coin_s.set_volume(0.5)
+
+jump_s = pygame.mixer.Sound("img_jump.wav")
+jump_s.set_volume(0.5)
+
+game_over_s = pygame.mixer.Sound("img_game_over.wav")
+game_over_s.set_volume(0.5)
+
+
+#to define position for grass block or dirt block(not a part of the game)
+# def draw_grid():
+# 	for line in range(0, 20):
+# 		pygame.draw.line(screen, (255, 255, 255), (0, line * tile_size), (screen_width, line * tile_size))
+# 		pygame.draw.line(screen, (255, 255, 255), (line * tile_size, 0), (line * tile_size, screen_height))
+
+
+#for creating text 
+def draw_text(text,font,text_color,x,y):
+    img = font.render(text,True ,text_color)
+    screen.blit(img,(x,y))
+
+
+#function to reset level
+def reset_level(level):
+    player.reset(100,screen_height - 130)#player back to the pos
+    #while resetting the level empty all the previous grps
+    blob_group.empty()
+    lava_group.empty()
+    exit_group.empty()
+    platform_group.empty()
+
+    #load in level data and create world
+    if path.exists(f"level{level}_data"):
+        pickle_in = open(f"level{level}_data","rb") #to read data from level data
+        world_data = pickle.load(pickle_in)
+    world = World (world_data) # world instance 
+    score_coin = Coin(tile_size//2,tile_size//2)
+    coin_group.add(score_coin)
+    return world
+
+
+
+
+#to make buttons
+class Button():
+    def __init__(self,x,y,image):
+        self.image = image
+        self.rect = self.image.get_rect()
+        self.rect.x = x
+        self.rect.y = y
+        self.clicked = False
+
+    def draw(self):
+        #to click the button
+        action = False
+        #get mouse position
+        pos = pygame.mouse.get_pos()
+
+        #check mouseover and clicked conditions
+        if self.rect.collidepoint(pos):
+            if pygame.mouse.get_pressed()[0]==1 and self.clicked == False: #[0] for left button
+                action = True
+                self.clicked = True
+
+        if pygame.mouse.get_pressed()[0]==0:
+            self.clicked = False        
+        #draw button
+        screen.blit(self.image,self.rect)
+
+        return action
+
+
+#guy class
+class Player():
+    def __init__(self,x,y):
+       self.reset(x,y)
+
+
+#to get player on the screen
+    def update(self,game_over):
+        dx =0
+        dy =0
+        walk_cooldown = 5 #to slow down the animation
+        col_thresh = 20 
+
+        if game_over == 0: #run until gameover is 0 
+            key = pygame.key.get_pressed() #for key functioning
+
+            if key[pygame.K_SPACE] and self.jumped == False and self.in_air == False: #if space is pressed jump
+                jump_s.play() #for  jump sound
+                self.vel_y = -15
+                self.jumped = True
+            if key[pygame.K_SPACE] == False: # stop jump
+                self.jumped = False
+
+            if key[pygame.K_LEFT] : #go left
+                dx -=4
+                self.counter += 1
+                self.direction = -1
+
+            if key[pygame.K_RIGHT] : #go right
+                dx +=4
+                self.counter += 1
+                self.direction = 1
+                
+            #this means if i don  press any key iyt will get back to guy1 
+            if key[pygame.K_LEFT] == False and  key[pygame.K_RIGHT]== False:
+                self.counter = 0
+                self.index = 0
+                
+                if self.direction ==1:
+                    self.image = self.images_right[self.index]
+                if self.direction ==-1:
+                    self.image = self.images_left[self.index]
+
+            #handle animation
+            
+            if self.counter > walk_cooldown:
+                self.counter = 0
+                self.index += 1
+                if self.index >= len(self.images_right):
+                    self.index = 0 
+                if self.direction ==1:
+                    self.image = self.images_right[self.index]
+                if self.direction ==-1:
+                    self.image = self.images_left[self.index]
+
+            #add gravity when jumps
+            self.vel_y +=1
+            if self.vel_y >10:
+                self.vel_y = 10
+            dy += self.vel_y
+
+            #check for collision
+            self.in_air = True
+            for tile in world.tile_list:
+
+                #check for collision in x direction
+                if tile[1].colliderect(self.rect.x+dx,self.rect.y,self.width,self.height):
+                    dx =0
+
+                #check for collision in y direction
+                ''' if we pass our player rectangle it will overlap and then detect but
+                we want it to detect before collision so we will create a temporary rectangle by using dy'''
+                if tile[1].colliderect(self.rect.x,self.rect.y + dy,self.width,self.height):
+                    #when bumps the head to the tile i.e. jumping
+                    if self.vel_y < 0 :
+                        dy = tile[1].bottom - self.rect.top #self.rect is player 
+                        self.vel_y = 0
+                    #when hits the ground i.e. falling
+                    elif self.vel_y >= 0 :
+                        dy = tile[1].top - self.rect.bottom #self.rect is player 
+                        self.vel_y = 0
+                        self.in_air = False
+
+            #check for collision with enemies 
+            if pygame.sprite.spritecollide(self,blob_group,False):
+                game_over = -1
+                game_over_s.play() #for  gameover sound
+                
+            #check for collision with lava 
+            if pygame.sprite.spritecollide(self,lava_group,False):
+                game_over = -1    
+                game_over_s.play() #for  gameover sound
+                
+
+            #check for collision with exit gate
+            if pygame.sprite.spritecollide(self,exit_group,False):
+                game_over = 1 
+
+
+             #check for collision with platforms
+            for platform in platform_group:
+                 #collision in the x direction
+                if platform.rect.colliderect(self.rect.x + dx,self.rect.y,self.width,self.height):
+                    dx=0
+                #collision in the y direction
+                if platform.rect.colliderect(self.rect.x,self.rect.y + dy,self.width,self.height):
+                    #check if below platform
+                    if abs((self.rect.top + dy)- platform.rect.bottom)<col_thresh:
+                        self.vel_y = 0 #as soon as player bumps its head to the platform velocity becomes 0
+                        dy = platform.rect.bottom - self.rect.top 
+                    #check if abv platform    
+                    elif abs((self.rect.bottom + dy)- platform.rect.top)<col_thresh:
+                        self.rect.bottom =  platform.rect.top-1
+                        self.in_air = False
+                        dy=0 
+                    #move sideways with the platform
+                    if platform.move_x !=0:
+                        self.rect.x += platform.move_direction 
+                    
+                        
+            #update player coordinates when  p goes left and right
+            self.rect.x += dx
+            self.rect.y += dy
+
+            # if self.rect.bottom >screen_height:
+            #     self.rect.bottom = screen_height  #limmitting player to stay inside the screen
+            #     dy = 0
+        
+        #gameover ghost moving
+        elif game_over == -1:
+            self.image = self.dead_image
+            draw_text("GAME OVER!" , font ,blue , (screen_width//2)-200,screen_height//2)
+
+            if self.rect.y >200:
+                self.rect.y -=5
+
+            
+
+        #draw player onto screen
+        screen.blit(self.image,self.rect)
+        #it will make rectangle around the player (for collision)
+        # pygame.draw.rect(screen,(255,255,255),self.rect,2)
+        return game_over
+
+
+    def reset(self,x,y):
+        self.images_right = [] #making a list of guy images for  animation
+        self.images_left = [] #for left image
+
+        self.index = 0 # index of the guy in the list
+        self.counter = 0
+        for num in range(1,5):
+            img_right = pygame.image.load(f"guy{num}.png") #for animation
+            img_right = pygame.transform.scale(img_right,(40,80))
+            img_left = pygame.transform.flip(img_right,True,False) #to flip the right image x axis true y axis false
+
+            self.images_right.append(img_right)
+            self.images_left.append(img_left)
+            
+        self.dead_image = pygame.image.load("ghost.png") #for ghost image
+        self.image = self.images_right[self.index]   
+        #self.image = pygame.transform.scale(img,(40,80)) #xaxis and yaxis
+        self.rect = self.image.get_rect()
+        self.rect.x=x #to get x coordinate
+        self.rect.y=y #to get y coordinate
+        self.width = self.image.get_width() #to get width
+        self.height = self.image.get_height() #to get height
+        self.vel_y = 0 #for jump velocity
+        self.jumped = False
+        self.direction = 0
+        self.in_air = True
+
+   
+#world class
+class World():
+    def __init__(self,data):
+        self.tile_list=[]
+
+        #load images
+        dirt = pygame.image.load("dirt.png")
+        grass = pygame.image.load("grass.png")
+
+
+        #traversing from world's 1s ans 0s
+        row_count = 0  
+        for row in data:
+            col_count = 0 
+            for tile in row:
+                if tile ==1:  #for dirt tile
+
+                    img = pygame.transform.scale(dirt,(tile_size,tile_size)) #to resize dirt image into tiles of 200
+                    img_rect = img.get_rect()  #to make img rectangle
+                    img_rect.x = col_count * tile_size
+                    img_rect.y = row_count * tile_size
+                    #to save the data 
+                    tile = (img , img_rect)
+                    self.tile_list.append(tile)
+
+                if tile ==2:  #for grass tile
+
+                    img = pygame.transform.scale(grass,(tile_size,tile_size)) #to resize dirt image into tiles of 200
+                    img_rect = img.get_rect()  #to make img rectangle
+                    img_rect.x = col_count * tile_size
+                    img_rect.y = row_count * tile_size
+                    #to save the data 
+                    tile = (img , img_rect)
+                    self.tile_list.append(tile)
+
+                if tile == 3:   #for blob tile
+                    blob = Enemy(col_count * tile_size , row_count * tile_size + 15)
+                    blob_group.add(blob)
+                
+                if tile == 4:   #for platform tile
+                    platform = Platform(col_count * tile_size , row_count * tile_size,1,0)  #horizontal
+                    platform_group.add(platform)
+
+                if tile == 5:   #for platform tile
+                    platform = Platform(col_count * tile_size , row_count * tile_size,0,1) #vertical
+                    platform_group.add(platform)
+
+
+                if tile == 6: 
+                    lava = Lava(col_count * tile_size , row_count * tile_size + (tile_size // 2)) #tile_size // 2 to take lava down
+                    lava_group.add(lava)
+                
+                if tile == 7: 
+                    coin = Coin(col_count * tile_size//2 , row_count * tile_size + (tile_size // 2)) 
+                    coin_group.add(coin)
+
+                if tile == 8:
+                    exit = Exit(col_count*tile_size,row_count * tile_size - (tile_size//2))
+                    exit_group.add(exit)
+
+
+                col_count += 1
+            row_count += 1
+    
+    #to draw dirt on the screen
+    def draw(self):
+        for tile in self.tile_list:
+            screen.blit(tile[0],tile[1]) 
+            #it will make rectangle around each tile (for collision)
+            #pygame.draw.rect(screen,(255,255,255),tile[1],2)
+            
+#enemy class
+#check pygame.sprite.Sprite method on google for more info 
+class Enemy(pygame.sprite.Sprite):
+    def __init__(self , x, y):
+        pygame.sprite.Sprite.__init__(self)
+        self.image = pygame.image.load("blob.png")
+        self.rect = self.image.get_rect()
+        self.rect.x = x         
+        self.rect.y = y
+        self.move_direction = 1
+        self.move_counter = 0
+
+    #pygame.sprite.Sprite already comes with update and draw function but we want to add more 
+    #to move the blob
+    def update(self):
+        self.rect.x += self.move_direction
+        self.move_counter += 1
+        if (self.move_counter) >50:  #to limit blob
+            self.move_direction *= -1
+            self.move_counter *= -1
+
+class Platform(pygame.sprite.Sprite):
+        def __init__(self , x, y,move_x,move_y):
+            pygame.sprite.Sprite.__init__(self)
+            img = pygame.image.load("platform.png")
+            self.image = pygame.transform.scale(img,(tile_size,tile_size//2))
+            self.rect = self.image.get_rect()
+            self.rect.x = x         
+            self.rect.y = y         
+            self.move_counter = 0
+            self.move_direction = 1
+            #horizontal and vertical 
+            self.move_x = move_x  
+            self.move_y = move_y                    
+
+        def update(self):
+            self.rect.x += self.move_direction * self.move_x
+            self.rect.y += self.move_direction * self.move_y
+            self.move_counter += 1
+            if (self.move_counter) >50:  #to limit platform
+                self.move_direction *= -1
+                self.move_counter *= -1 
+
+
+
+class Lava(pygame.sprite.Sprite):
+        def __init__(self , x, y):
+            pygame.sprite.Sprite.__init__(self)
+            img = pygame.image.load("lava.png")
+            self.image = pygame.transform.scale(img,(tile_size,tile_size//2))
+            self.rect = self.image.get_rect()
+            self.rect.x = x         
+            self.rect.y = y
+
+class Coin(pygame.sprite.Sprite):
+        def __init__(self , x, y):
+            pygame.sprite.Sprite.__init__(self)
+            img = pygame.image.load("coin.png")
+            self.image = pygame.transform.scale(img,(tile_size//2,tile_size//2))
+            self.rect = self.image.get_rect()
+            self.rect.center = (x,y)        
+
+class Exit(pygame.sprite.Sprite):
+        def __init__(self , x, y):
+            pygame.sprite.Sprite.__init__(self)
+            img = pygame.image.load("exit.png")
+            self.image = pygame.transform.scale(img,(tile_size,int(tile_size*1.5)))
+            self.rect = self.image.get_rect()
+            self.rect.x = x         
+            self.rect.y = y
+
+              
+
+
+
+
+
+#list of dirt , grass and all 
+# world_data = [
+# [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], 
+# [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], 
+# [1, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 1], 
+# [1, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 2, 2, 1], 
+# [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 0, 7, 0, 5, 0, 0, 0, 1], 
+# [1, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 2, 2, 0, 0, 0, 0, 0, 1], 
+# [1, 7, 0, 0, 2, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], 
+# [1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], 
+# [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 7, 0, 0, 0, 0, 1], 
+# [1, 0, 2, 0, 0, 7, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], 
+# [1, 0, 0, 2, 0, 0, 4, 0, 0, 0, 0, 3, 0, 0, 3, 0, 0, 0, 0, 1], 
+# [1, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 1], 
+# [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], 
+# [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0, 7, 0, 0, 0, 0, 2, 0, 1], 
+# [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], 
+# [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 2, 2, 2, 2, 2, 1], 
+# [1, 0, 0, 0, 0, 0, 2, 2, 2, 6, 6, 6, 6, 6, 1, 1, 1, 1, 1, 1], 
+# [1, 0, 0, 0, 0, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], 
+# [1, 0, 0, 0, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], 
+# [1, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+# ]
+#we will use level_data so we don't need this
+
+player = Player(100, screen_height -120)  #80 pixels player height and 40 pixels tile (instance)
+
+blob_group = pygame.sprite.Group()  #making empty blob group 
+platform_group = pygame.sprite.Group()  #making empty plaform group 
+lava_group = pygame.sprite.Group()  #making empty lava group 
+exit_group = pygame.sprite.Group()  #making empty exit gate group 
+coin_group = pygame.sprite.Group()  #making empty coin group 
+
+#create dummy coin for displaying the scr
+score_coin=Coin(tile_size//2,tile_size//2)
+coin_group.add(score_coin)
+
+#load in level data and create world
+if path.exists(f"level{level}_data"):
+    pickle_in = open(f"level{level}_data","rb") #to read data from level data
+    world_data = pickle.load(pickle_in)
+world = World (world_data) # world instance 
+
+#create button
+restart_button = Button(screen_width // 2 - 50, screen_height//2+100,restart)
+start_button = Button(screen_width//2 - 300,screen_height//2 , start)
+exit_button = Button(screen_width//2 - -50,screen_height//2 , exit)
+
+#run condtion
+run = True
+while run:  #game loop
+    screen.blit(sky,(0,0)) #to make sun and sky appear all the time, order is important
+    screen.blit(sun,(100,100))
+
+    clock.tick(fps)
+
+
+    if main_menu== True:
+        if exit_button.draw() == True: #for exit button
+            run =False
+        if start_button.draw() == True:
+            main_menu = False
+
+    else:
+        world.draw()
+
+        if game_over == 0: #when game overs  blob will stop moving
+            platform_group.update() #it will update entire platform group
+            blob_group.update() #it will update entire blob group
+            #update score
+            #check if a coin has been collected
+            if pygame.sprite.spritecollide(player,coin_group,True):
+                score += 1
+                coin_s.play() #for  coin sound
+                
+            draw_text("X "+ str(score),score_font,white,tile_size-10,5) #to display score
+
+        blob_group.draw(screen)
+
+        platform_group.draw(screen)
+
+        lava_group.draw(screen)
+        
+        coin_group.draw(screen)
+
+        exit_group.draw(screen)
+ 
+        
+        game_over = player.update(game_over)
+        
+        #if player has died
+        if game_over==-1:
+            if restart_button.draw():
+                world_data = []
+                world = reset_level(level)
+                game_over = 0
+                score = 0
+        #if player has completed the level
+        if game_over == 1: 
+            #reset the game to the nxt level
+            level += 1
+            #draw_text("Level "+ str(level),level_font,white,(screen_width//2)-140,screen_height//2) #to display level
+            
+            if level <= max_levels:
+                #reset level
+                world_data = []
+                world = reset_level(level)
+                game_over = 0
+            else:
+                draw_text("YOU WIN!" , font ,blue , (screen_width//2)-140,screen_height//2)
+
+                #restart game 
+                if restart_button.draw():
+                    level = 1
+                    #reset level
+                    world_data = []
+                    world = reset_level(level)
+                    game_over = 0
+                    score = 0
+
+    for event in pygame.event.get():  #event handler
+        if event.type==pygame.QUIT:  #if we press on x it will quit the game
+            run = False
+
+    pygame.display.update()   
+
+pygame.quit()
